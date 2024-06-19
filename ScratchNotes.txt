@@ -1,0 +1,17 @@
+Reference-modify functions for properties and features called from the user files
+
+File with structs of all descriptor structs
+File with structs attempting to reconstruct the input rate data (vertex and instance)
+    -- instance marked with *_instance
+
+File with classes similar to GPDescriptorSets.h, where each controls a descriptor set layout, and a main class holds them all
+    ++ write functionality
+
+ As defined by a config cpp file
+    -- Material classes
+    -- two tiered - base --> impl with descriptors marked out -> impl with storage (or lack of) for backing buffers and images
+    Parameters:
+        -- Mark descriptors by name as special attention
+        -- Specify special attention for whole shader (COMPUTE vs GRAPHICS)
+        -- Specify stages and file/names for each stage
+
