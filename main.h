@@ -16,22 +16,34 @@
 
 #include "SPIRV-Reflect/spirv_reflect.h"
 
+#define GLOBAL_DESCSET_INDEX 0
+#define MAX_DESCRIPTOR_SETS 4
+
 struct StageDescriptor {
     std::string filename;
     SpvReflectShaderStageFlagBits stageType;
 };
 
+// TODO: make a config param that lets the user name the descriptors
 struct PipelineConfig {
     uint32_t globalDescSetID;
     std::string pipelineName;
     std::vector<StageDescriptor> stages;
     std::vector<std::string> layoutFlags; // i.e. "VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT_EXT"
+    /**
+     * Not for user
+     */
+    std::array<std::string, MAX_DESCRIPTOR_SETS> descSetManagerNames;
 };
 
 struct GlobalDescriptorSet {
     std::string name;
     uint32_t globalDescSetID;
     SpvReflectDescriptorSet* descSet;
+    /**
+     * Not for user
+     */
+    std::string managerName;
 };
 
 // BASELINE BOILERPLATE
@@ -80,8 +92,6 @@ void FreeReflectModules(std::vector<std::pair<std::string, SpvReflectShaderModul
 
 
 // WORKING
-#define GLOBAL_DESCSET_INDEX 0
-#define MAX_DESCRIPTOR_SETS 4
 std::vector<std::array<SpvReflectDescriptorSet *, MAX_DESCRIPTOR_SETS>>
 MergeModulesUnionDescriptorSetsByPipeline(const std::vector<PipelineConfig> &pipelines,
                                           const std::vector<std::pair<std::string, SpvReflectShaderModule *>> &modules);
@@ -95,10 +105,25 @@ void PopulateGlobalDescriptorLayouts(const std::vector<std::pair<uint32_t, SpvRe
 void GenerateInputVariableFile(const std::vector<PipelineConfig> &configs,
                                std::vector<std::pair<std::string, SpvReflectShaderModule *>> &modules,
                                const std::string& filename);
-void GenerateGlobalDescriptorSetsFile(const std::vector<GlobalDescriptorSet> &globalConfigs,
+/**
+ * Returns generated structs
+ * @param globalConfigs
+ * @param reflectedGlobalDescSets
+ * @param filename
+ * @return
+ */
+std::vector<std::string> GenerateGlobalDescriptorSetsFile(std::vector<GlobalDescriptorSet> &globalConfigs,
                                       const std::vector<std::pair<uint32_t, SpvReflectDescriptorSet *>> &reflectedGlobalDescSets,
                                       const std::string& filename);
-
+/**
+ * EXPECTS configs.size() == unionedDescSets.size()
+ * @param configs
+ * @param unionedDescSets
+ * @return
+ */
+std::vector<std::string>  GenerateMaterialDescriptorSetsFile(std::vector<PipelineConfig> &configs,
+                                                             const std::vector<std::array<SpvReflectDescriptorSet *, 4>> &unionedDescSets,
+                                                             const std::string& filename);
 
 
 

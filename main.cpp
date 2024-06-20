@@ -104,6 +104,7 @@ void ExampleParseSingleModule(const std::string& filename="test_shader_vert.spv"
 
 void PerformShaderGen(const std::vector<GlobalDescriptorSet>& globalSetConfigs, const std::vector<PipelineConfig>& configs) {
     auto globalSets = globalSetConfigs;
+    auto pipelineConfigs = configs;
 
     // Step 1, get all the reflection modules
     std::vector<std::pair<std::string, SpvReflectShaderModule*>> modules = CreateAllReflectModules(configs);
@@ -122,9 +123,24 @@ void PerformShaderGen(const std::vector<GlobalDescriptorSet>& globalSetConfigs, 
     GenerateInputVariableFile(configs, modules, "InputData.h");
 
     // Step 4, build and generate descriptor sets for global descriptor sets
-    GenerateGlobalDescriptorSetsFile(globalSetConfigs, globalPartialSetsPerPipeline, "GlobalDescSetLayoutData.h");
+    auto generatedStructs =
+    GenerateGlobalDescriptorSetsFile(globalSets, globalPartialSetsPerPipeline, "GlobalDescSetLayoutData.h");
+
+    // Step 4.5, populate the global desc names of the pipeline config objects
+    for (auto & pc : pipelineConfigs) {
+        uint32_t gid = pc.globalDescSetID;
+        pc.descSetManagerNames[GLOBAL_DESCSET_INDEX] = std::find_if(globalSets.begin(), globalSets.end(),
+                               [gid](const GlobalDescriptorSet& g) { return g.globalDescSetID == gid;})
+                                       ->managerName;
+    }
 
     // Step 5, build and generate descriptor sets for per-pipeline (exclude the global index)
+    auto generatedStructs2 =
+    GenerateMaterialDescriptorSetsFile(pipelineConfigs, mergedSets, "MaterialDescSetLayoutData.h");
+
+
+    // STEP !!! the material guts...
+
 
     // ALLOC CLEANUP, not pretty... TODO: need some RAII in this bitch
     std::cout << mergedSets.size() << " made from " << configs.size() << std::endl;
@@ -142,7 +158,76 @@ void PerformShaderGen(const std::vector<GlobalDescriptorSet>& globalSetConfigs, 
 
 }
 
-void GenerateGlobalDescriptorSetsFile(const std::vector<GlobalDescriptorSet> &globalConfigs,
+
+std::vector<std::string>  GenerateMaterialDescriptorSetsFile(std::vector<PipelineConfig> &configs,
+                                        const std::vector<std::array<SpvReflectDescriptorSet *, 4>> &unionedDescSets,
+                                        const std::string& filename) {
+    assert(configs.size() == unionedDescSets.size());
+
+    std::ofstream outFile(std::string(OUT_DIR) + filename);
+    if (!outFile.is_open()) {
+        std::cerr << "Failed to open the file." << std::endl;
+    }
+
+    std::string boilerInputFilename = "IN_InputData.h";
+    std::string boilerDescSetFilename = "IN_DescSetLayoutHeader.h";
+    outFile << "#include \"" << boilerInputFilename << "\"\n";
+    outFile << "#include \"" << boilerDescSetFilename << "\"\n\n";
+
+
+    // TODO: makes the grave assumption that structs with identical names will have identical members, this isn't necessarily true AND can be checked in future
+    outFile << "/********************************************************************************************\n";
+    outFile << "****************************     " << "STRUCTS!!!!" << "     ******************************\n";
+    outFile << "*********************************************************************************************/\n\n";
+    std::vector<std::string> declaredStructs;
+    for (const auto& pSets : unionedDescSets) {
+        for (const auto* set : pSets) {
+            if (set == nullptr || set->set == GLOBAL_DESCSET_INDEX) continue;
+            std::vector<SpvReflectDescriptorBinding *> bindings(set->bindings, set->bindings + set->binding_count);
+            outFile << WriteUsedStructsInDescSet(bindings, declaredStructs) << "\n\n";
+            for (SpvReflectDescriptorBinding *binding: bindings) {
+                if (binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+                    declaredStructs.emplace_back(binding->type_description->type_name);
+            }
+        }
+    }
+
+    std::vector<std::string> postfixBySetID { "GLOBAL", "MAT", "LOCAL", "UNKNOWN" };
+    std::vector<std::vector<SpvReflectDescriptorBinding*>> bindingsToSet_forDebug;
+    for (uint32_t i = 0; i < configs.size(); ++i) {
+        auto& p = configs[i];
+        const auto& pSets = unionedDescSets[i];
+        for (SpvReflectDescriptorSet* set: pSets) {
+            if (set == nullptr || set->set == GLOBAL_DESCSET_INDEX) continue;
+            std::string setName = configs[i].pipelineName + "_" + postfixBySetID[set->set];
+
+            outFile << "\n\n\n/********************************************************************************************\n";
+            outFile << "****************************     " << setName << "     ******************************\n";
+            outFile << "*********************************************************************************************/\n\n\n";
+
+            std::vector<SpvReflectDescriptorBinding *> setBindings(set->bindings, set->bindings + set->binding_count);
+            outFile << WriteDescSetLayout(setBindings, setName) << "\n\n";
+
+            p.descSetManagerNames[set->set] = setName + "_IMPL";
+            outFile << "typedef " << setName << "_DescriptorSet<";
+            uint32_t numBindings = set->binding_count;
+            for (uint32_t i = 0; i < numBindings; ++i) {
+                outFile << "VK_SHADER_STAGE_ALL_GRAPHICS, ";
+            }
+            outFile << "VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT_EXT> " << p.descSetManagerNames[set->set] << ";\n";
+        }
+    }
+    return declaredStructs;
+}
+
+/**
+ *
+ * @param globalConfigs MODIFIES, WRITES TO managerName WHICH WILL BE THE NAME OF THE DECLARED MANAGER TYPE using typedef
+ * @param reflectedGlobalDescSets
+ * @param filename
+ * @return The names of all structs generated by this function and put into the file. There are likely to be duplicates.
+ */
+std::vector<std::string> GenerateGlobalDescriptorSetsFile(std::vector<GlobalDescriptorSet> &globalConfigs,
                                       const std::vector<std::pair<uint32_t, SpvReflectDescriptorSet *>> &reflectedGlobalDescSets,
                                       const std::string& filename) {
     std::ofstream outFile(std::string(OUT_DIR) + filename);
@@ -150,10 +235,12 @@ void GenerateGlobalDescriptorSetsFile(const std::vector<GlobalDescriptorSet> &gl
         std::cerr << "Failed to open the file." << std::endl;
     }
 
+    std::string boilerInputFilename = "IN_InputData.h";
+    std::string boilerDescSetFilename = "IN_DescSetLayoutHeader.h";
     outFile << "#include <vulkan/vulkan.h>\n";
     outFile << "#include <array>\n\n";
-    outFile << "#include \"InputData.h\"\n\n"; // todo: this only uses the structs, we should pop those out
-    outFile << WriteDescSetLayoutBoilerplate();
+    outFile << "#include \"" << boilerInputFilename << "\"\n";
+    outFile << "#include \"" << boilerDescSetFilename << "\"\n\n";
 
 
     // TODO: makes the grave assumption that structs with identical names will have identical members, this isn't necessarily true AND can be checked in future
@@ -170,13 +257,11 @@ void GenerateGlobalDescriptorSetsFile(const std::vector<GlobalDescriptorSet> &gl
         }
     }
 
-    std::vector<SpvReflectDescriptorSet*> sets;
-    std::vector<std::pair<uint32_t, std::string>> regDescSets;
     std::vector<std::vector<SpvReflectDescriptorBinding*>> bindingsToSet_forDebug;
     for (auto [globalID, set] : reflectedGlobalDescSets) {
-        std::string setName = std::find_if(globalConfigs.begin(), globalConfigs.end(),
-                   [globalID](const GlobalDescriptorSet& d) { return d.globalDescSetID == globalID; })
-                   ->name;
+        auto it = std::find_if(globalConfigs.begin(), globalConfigs.end(),
+                   [globalID](const GlobalDescriptorSet& d) { return d.globalDescSetID == globalID; });
+        std::string setName = it->name;
 
         outFile << "\n\n\n/********************************************************************************************\n";
         outFile << "****************************     " << setName << "     ******************************\n";
@@ -184,12 +269,16 @@ void GenerateGlobalDescriptorSetsFile(const std::vector<GlobalDescriptorSet> &gl
 
         std::vector<SpvReflectDescriptorBinding *> setBindings(set->bindings, set->bindings + set->binding_count);
         outFile << WriteDescSetLayout(setBindings, setName) << "\n\n";
-        regDescSets.emplace_back(set->set, setName);
-        sets.push_back(set);
-    }
-    outFile << "\n\n// TODO: functionality MANAGING DESCRIPTORS ACROSS FILES PLEASE" << std::endl;
-    outFile << WriteDescSetLayoutManager(regDescSets, sets) << std::endl;
 
+        it->managerName = it->name + "_IMPL";
+        outFile << "typedef " << setName << "_DescriptorSet<";
+        uint32_t numBindings = it->descSet->binding_count;
+        for (uint32_t i = 0; i < numBindings; ++i) {
+            outFile << "VK_SHADER_STAGE_ALL_GRAPHICS, ";
+        }
+        outFile << "VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT_EXT> " << it->managerName << ";\n";
+    }
+    return declaredStructs;
 }
 
 /**
@@ -213,9 +302,10 @@ void GenerateInputVariableFile(const std::vector<PipelineConfig> &configs,
         std::cerr << "Failed to open the file." << std::endl;
     }
 
+    std::string boilerInputFilename = "IN_InputData.h";
     outFile << "#include <vulkan/vulkan.h>\n";
-    outFile << "#include <array>\n\n";
-    outFile << WriteTypeDescriptionsBoilerplate();
+    outFile << "#include <array>\n";
+    outFile << "#include \"" << boilerInputFilename << "\"\n\n";
 
     for (const auto& p : configs) {
         SpvReflectShaderModule* inModule = GetInputModule(p, modules);
