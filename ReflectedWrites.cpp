@@ -25,7 +25,7 @@ std::string WriteDescSetLayoutBoilerplate() {
     return WriteFromFile(std::string(BOILERPLATE_DIR) + "/IN_DescSetLayouts.h");
 }
 
-std::string WriteBaselineTypeDescriptions() {
+std::string WriteTypeDescriptionsBoilerplate() {
     return WriteFromFile(std::string(BOILERPLATE_DIR) + "/IN_BaseDescs.h");
 }
 
@@ -46,10 +46,10 @@ std::string GetTypeAsString(SpvReflectInterfaceVariable *inVar) {
 }
 
 void reflectInputVariables(const std::vector<SpvReflectInterfaceVariable *> &inputVars) {
-    auto initTypeDefs = WriteBaselineTypeDescriptions();
-    auto vertInputs = WriteVertexInputs(inputVars);
-    auto instanceInputs = WriteInstanceInputs(inputVars);
-    std::ofstream outFile(std::string(OUT_DIR) + "/InputData.h");
+    auto initTypeDefs = WriteTypeDescriptionsBoilerplate();
+    auto vertInputs = WriteVertexInputs(inputVars, "");
+    auto instanceInputs = WriteInstanceInputs(inputVars, "");
+    std::ofstream outFile(std::string(OUT_DIR) + "/EX_InputData.h");
     if (!outFile.is_open()) {
         std::cerr << "Failed to open the file." << std::endl;
     }
@@ -86,12 +86,11 @@ std::string GetTypeAsString(SpvReflectTypeDescription *typeDesc) {
  */
 void reflectDescriptorSets(const std::string& pipelineName,
                            const std::vector<SpvReflectDescriptorSet*>& sets) {
-    // TODO: need parameters for: DescSet names, DescSet pipeline pairings
     std::vector<std::string> DEFAULT_DESC_POSTFIXES = {
             "Global", "Material", "Local",
     };
 
-    std::ofstream outFile(std::string(OUT_DIR) + "/DescSetLayoutData.h");
+    std::ofstream outFile(std::string(OUT_DIR) + "/EX_DescSetLayoutData.h");
     if (!outFile.is_open()) {
         std::cerr << "Failed to open the file." << std::endl;
     }
@@ -159,12 +158,21 @@ std::string WriteDescSetLayout(const std::vector<SpvReflectDescriptorBinding *> 
     return ssBuilder.str();
 }
 
-std::string WriteUsedStructsInDescSet(const std::vector<SpvReflectDescriptorBinding *> &bindings) {
+bool isIn(const std::string& key, const std::vector<std::string> &vals) {
+    return std::find(vals.begin(), vals.end(), key) != vals.end();
+}
+std::string
+WriteUsedStructsInDescSet(const std::vector<SpvReflectDescriptorBinding *> &bindings, const std::vector<std::string> &prohibitedStructs) {
     // TODO: cannot handle struct types yet, that shouldn't be a terrible change tho
     std::ostringstream ssBuilder;
     for (SpvReflectDescriptorBinding* binding : bindings) {
         if (binding->descriptor_type != SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER) continue;
         auto structDesc = binding->type_description;
+        if (isIn(structDesc->type_name, prohibitedStructs)) {
+            std::cout << "Multi-declare filtered for desc struct " << structDesc->type_name << std::endl;
+            continue;
+        }
+
         ssBuilder << "struct " << structDesc->type_name << " {\n";
         for (size_t m = 0; m < structDesc->member_count; ++m) {
             auto* member = &structDesc->members[m];
@@ -177,7 +185,8 @@ std::string WriteUsedStructsInDescSet(const std::vector<SpvReflectDescriptorBind
     return ssBuilder.str();
 }
 
-std::string WriteInstanceInputs(const std::vector<SpvReflectInterfaceVariable *> &inputVars) {
+std::string
+WriteInstanceInputs(const std::vector<SpvReflectInterfaceVariable *> &inputVars, const std::string &postfix) {
     uint32_t binding = 1;
     std::ostringstream ssBuilder;
     std::vector<std::pair<uint32_t, SpvReflectInterfaceVariable*>> vertexInputs;
@@ -187,7 +196,7 @@ std::string WriteInstanceInputs(const std::vector<SpvReflectInterfaceVariable *>
         vertexInputs.emplace_back(inVar->location, inVar);
     }
     std::sort(vertexInputs.begin(), vertexInputs.end());
-    std::string structName("TestInstance");
+    std::string structName(postfix + "Instance");
     ssBuilder << "struct " << structName << " {\n";
     for (auto [i, inVar] : vertexInputs) {
         ssBuilder << "\t" << GetTypeAsString(inVar) << " " << inVar->name << ";\n";
@@ -213,7 +222,7 @@ std::string WriteInstanceInputs(const std::vector<SpvReflectInterfaceVariable *>
     return ssBuilder.str();
 }
 
-std::string WriteVertexInputs(const std::vector<SpvReflectInterfaceVariable *> &inputVars) {
+std::string WriteVertexInputs(const std::vector<SpvReflectInterfaceVariable *> &inputVars, const std::string &postfix) {
     uint32_t binding = 0;
     std::ostringstream ssBuilder;
     std::vector<std::pair<uint32_t, SpvReflectInterfaceVariable*>> vertexInputs;
@@ -223,7 +232,7 @@ std::string WriteVertexInputs(const std::vector<SpvReflectInterfaceVariable *> &
         vertexInputs.emplace_back(inVar->location, inVar);
     }
     std::sort(vertexInputs.begin(), vertexInputs.end());
-    std::string structName("TestVertex");
+    std::string structName(postfix + "Vertex");
     ssBuilder << "struct " << structName << " {\n";
     for (auto [i, inVar] : vertexInputs) {
         ssBuilder << "\t" << GetTypeAsString(inVar) << " " << inVar->name << ";\n";

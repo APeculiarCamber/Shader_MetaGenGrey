@@ -18,7 +18,6 @@
 #include <fstream>
 #include <iostream>
 #include <bitset>
-#include <sstream>
 #include <memory>
 #include "main.h"
 
@@ -103,27 +102,13 @@ void ExampleParseSingleModule(const std::string& filename="test_shader_vert.spv"
 
 }
 
-void PerformShaderGen() {
-    // TODO: TODO TODO, Process one of these: list of struct GlobalDescriptorSet, list of struct PipelineConfig
-    // TODO: also remember extensions, those are important!
-    // First order of business is to make the global descriptors
-    // Input for this should be:
-    GlobalDescriptorSet globalDescSet1 { .name = "AJohnnyTime", .globalDescSetID = 0, };
-    GlobalDescriptorSet globalDescSet2 { .name = "AJillyTime", .globalDescSetID = 1, };
-    std::vector<GlobalDescriptorSet> globalSets { globalDescSet1, globalDescSet2 };
+void PerformShaderGen(const std::vector<GlobalDescriptorSet>& globalSetConfigs, const std::vector<PipelineConfig>& configs) {
+    auto globalSets = globalSetConfigs;
 
-    PipelineConfig pipelineConfig1{.globalDescSetID = 0, .pipelineName = "RedDead1", .stages = {
-            StageDescriptor{std::string("test_shader_vert.spv"), SPV_REFLECT_SHADER_STAGE_VERTEX_BIT},
-            StageDescriptor{std::string("test_shader_frag.spv"), SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT}, }
-    };
-    PipelineConfig pipelineConfig2 { .globalDescSetID = 1, .pipelineName = "RedDead2", .stages = {
-            StageDescriptor{std::string("test_shader_split_vert.spv"), SPV_REFLECT_SHADER_STAGE_VERTEX_BIT},
-            StageDescriptor{std::string("test_shader_split_frag.spv"), SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT}, }
-    };
-    std::vector<PipelineConfig> configs { pipelineConfig2, pipelineConfig1 };
     // Step 1, get all the reflection modules
     std::vector<std::pair<std::string, SpvReflectShaderModule*>> modules = CreateAllReflectModules(configs);
     std::cout << "For this, we using at least: " << sizeof(SpvReflectShaderModule) * 2 * modules.size() << " bytes" << std::endl;
+
     // Step 1.5, union all the pipelines. NOTE: SAME ORDER AS THE PIPELINES, could change to explicitly mark iff needed
     std::vector<std::array<SpvReflectDescriptorSet*, MAX_DESCRIPTOR_SETS>> mergedSets = MergeModulesUnionDescriptorSetsByPipeline(configs,
                                                                                                                 modules);
@@ -132,10 +117,14 @@ void PerformShaderGen() {
     for (uint32_t i = 0; i < configs.size(); i++)
         globalPartialSetsPerPipeline[i] = { configs[i].globalDescSetID, mergedSets[i][GLOBAL_DESCSET_INDEX] };
     PopulateGlobalDescriptorLayouts(globalPartialSetsPerPipeline, globalSets);
-    // PopulateGlobalDescriptorLayouts(configs, globalSets);
-    // Step 3, build and generate inputs for VERTEX shaders, remember to opt out compute shaders
 
-    // Step 4, Union mat and local [1->4] descriptor sets
+    // Step 3, build and generate inputs for VERTEX shaders, remember to opt out compute shaders
+    GenerateInputVariableFile(configs, modules, "InputData.h");
+
+    // Step 4, build and generate descriptor sets for global descriptor sets
+    GenerateGlobalDescriptorSetsFile(globalSetConfigs, globalPartialSetsPerPipeline, "GlobalDescSetLayoutData.h");
+
+    // Step 5, build and generate descriptor sets for per-pipeline (exclude the global index)
 
     // ALLOC CLEANUP, not pretty... TODO: need some RAII in this bitch
     std::cout << mergedSets.size() << " made from " << configs.size() << std::endl;
@@ -153,7 +142,152 @@ void PerformShaderGen() {
 
 }
 
-SpvReflectDescriptorSet* GetDescSetOf(uint32_t id, SpvReflectShaderModule* module) {
+void GenerateGlobalDescriptorSetsFile(const std::vector<GlobalDescriptorSet> &globalConfigs,
+                                      const std::vector<std::pair<uint32_t, SpvReflectDescriptorSet *>> &reflectedGlobalDescSets,
+                                      const std::string& filename) {
+    std::ofstream outFile(std::string(OUT_DIR) + filename);
+    if (!outFile.is_open()) {
+        std::cerr << "Failed to open the file." << std::endl;
+    }
+
+    outFile << "#include <vulkan/vulkan.h>\n";
+    outFile << "#include <array>\n\n";
+    outFile << "#include \"InputData.h\"\n\n"; // todo: this only uses the structs, we should pop those out
+    outFile << WriteDescSetLayoutBoilerplate();
+
+
+    // TODO: makes the grave assumption that structs with identical names will have identical members, this isn't necessarily true AND can be checked in future
+    outFile << "/********************************************************************************************\n";
+    outFile << "****************************     " << "STRUCTS!!!!" << "     ******************************\n";
+    outFile << "*********************************************************************************************/\n\n";
+    std::vector<std::string> declaredStructs;
+    for (auto [globalID, set] : reflectedGlobalDescSets) {
+        std::vector<SpvReflectDescriptorBinding*> bindings(set->bindings, set->bindings + set->binding_count);
+        outFile << WriteUsedStructsInDescSet(bindings, declaredStructs) << "\n\n";
+        for (SpvReflectDescriptorBinding* binding : bindings) {
+            if (binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+                declaredStructs.emplace_back(binding->type_description->type_name);
+        }
+    }
+
+    std::vector<SpvReflectDescriptorSet*> sets;
+    std::vector<std::pair<uint32_t, std::string>> regDescSets;
+    std::vector<std::vector<SpvReflectDescriptorBinding*>> bindingsToSet_forDebug;
+    for (auto [globalID, set] : reflectedGlobalDescSets) {
+        std::string setName = std::find_if(globalConfigs.begin(), globalConfigs.end(),
+                   [globalID](const GlobalDescriptorSet& d) { return d.globalDescSetID == globalID; })
+                   ->name;
+
+        outFile << "\n\n\n/********************************************************************************************\n";
+        outFile << "****************************     " << setName << "     ******************************\n";
+        outFile << "*********************************************************************************************/\n\n\n";
+
+        std::vector<SpvReflectDescriptorBinding *> setBindings(set->bindings, set->bindings + set->binding_count);
+        outFile << WriteDescSetLayout(setBindings, setName) << "\n\n";
+        regDescSets.emplace_back(set->set, setName);
+        sets.push_back(set);
+    }
+    outFile << "\n\n// TODO: functionality MANAGING DESCRIPTORS ACROSS FILES PLEASE" << std::endl;
+    outFile << WriteDescSetLayoutManager(regDescSets, sets) << std::endl;
+
+}
+
+/**
+ * Get and return the module for the pipeline that can take input variables.
+ * Assumes this is always SPV_REFLECT_SHADER_STAGE_VERTEX_BIT.
+ */
+SpvReflectShaderModule* GetInputModule(const PipelineConfig& config,
+                                       std::vector<std::pair<std::string, SpvReflectShaderModule *>> &modules) {
+    auto it = std::find_if(config.stages.begin(), config.stages.end(),
+                 [](const StageDescriptor& stage) { return stage.stageType == SPV_REFLECT_SHADER_STAGE_VERTEX_BIT; });
+
+    if (it == config.stages.end()) return nullptr;
+    else return GetModule(modules, it->filename);
+}
+
+void GenerateInputVariableFile(const std::vector<PipelineConfig> &configs,
+                               std::vector<std::pair<std::string, SpvReflectShaderModule *>> &modules,
+                               const std::string& filename) {
+    std::ofstream outFile(std::string(OUT_DIR) + filename);
+    if (!outFile.is_open()) {
+        std::cerr << "Failed to open the file." << std::endl;
+    }
+
+    outFile << "#include <vulkan/vulkan.h>\n";
+    outFile << "#include <array>\n\n";
+    outFile << WriteTypeDescriptionsBoilerplate();
+
+    for (const auto& p : configs) {
+        SpvReflectShaderModule* inModule = GetInputModule(p, modules);
+        if (inModule) {
+            uint32_t count;
+            auto result = spvReflectEnumerateInputVariables(inModule, &count, NULL);
+            assert(result == SPV_REFLECT_RESULT_SUCCESS);
+            std::vector<SpvReflectInterfaceVariable *> inputVars(count);
+            result = spvReflectEnumerateInputVariables(inModule, &count, inputVars.data());
+            assert(result == SPV_REFLECT_RESULT_SUCCESS);
+
+            // Structs will be called <p.pipelineName>Instance and <p.pipelineName>Vertex
+            auto vertInputs = WriteVertexInputs(inputVars, p.pipelineName);
+            auto instanceInputs = WriteInstanceInputs(inputVars, p.pipelineName);
+
+            outFile << "\n\n\n/********************************************************************************************\n";
+            outFile << "****************************     " << p.pipelineName << "     ******************************\n";
+            outFile << "*********************************************************************************************/\n\n\n";
+
+            outFile << vertInputs;
+            outFile << "\n\n/********************************************************************************************/\n\n";
+            outFile << instanceInputs;
+        }
+    }
+
+
+}
+
+// =================================================================================================
+// main()
+// =================================================================================================
+int main(int argn, char** argv) {
+    ExampleParseSingleModule();
+    std::cout << "done" << std::endl;
+    GlobalDescriptorSet globalDescSet1 { .name = "AJohnnyTime", .globalDescSetID = 0, };
+    GlobalDescriptorSet globalDescSet2 { .name = "AJillyTime", .globalDescSetID = 1, };
+
+    PipelineConfig pipelineConfig1{.globalDescSetID = 0, .pipelineName = "RedDead1", .stages = {
+            StageDescriptor{std::string("test_shader_vert.spv"), SPV_REFLECT_SHADER_STAGE_VERTEX_BIT},
+            StageDescriptor{std::string("test_shader_frag.spv"), SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT}, }
+    };
+    PipelineConfig pipelineConfig2 { .globalDescSetID = 1, .pipelineName = "RedDead2", .stages = {
+            StageDescriptor{std::string("test_shader_split_vert.spv"), SPV_REFLECT_SHADER_STAGE_VERTEX_BIT},
+            StageDescriptor{std::string("test_shader_split_frag.spv"), SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT}, }
+    };
+    PerformShaderGen({globalDescSet1, globalDescSet2}, { pipelineConfig2, pipelineConfig1 });
+    return 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+SpvReflectDescriptorSet *GetDescSetOf(uint32_t id, SpvReflectShaderModule *module) {
     uint32_t count = 0;
     auto result = spvReflectEnumerateDescriptorSets(module, &count, NULL);
     assert(result == SPV_REFLECT_RESULT_SUCCESS);
@@ -162,7 +296,7 @@ SpvReflectDescriptorSet* GetDescSetOf(uint32_t id, SpvReflectShaderModule* modul
     assert(result == SPV_REFLECT_RESULT_SUCCESS);
 
     auto it = std::find_if(sets.begin(), sets.end(),
-                 [id](auto set) { return set->set == id; });
+                           [id](auto set) { return set->set == id; });
     if (it != sets.end()) return *it;
     else return nullptr;
 }
@@ -175,14 +309,14 @@ MergeModulesUnionDescriptorSetsByPipeline(const std::vector<PipelineConfig> &pip
     for (const auto& p : pipelines) {
         std::vector<SpvReflectShaderModule *> pModules(p.stages.size());
         std::transform(p.stages.begin(), p.stages.end(), pModules.begin(),[modules] (auto& desc)
-                                                                    { return GetModule(modules, desc.filename); });
+        { return GetModule(modules, desc.filename); });
         output.emplace_back();
         // For each descriptor set index, merge all the declarations between stages
         for (uint32_t i = 0; i < MAX_DESCRIPTOR_SETS; ++i) {
             output.back()[i] = nullptr;
             std::vector<SpvReflectDescriptorSet*> descSetsPerStage(p.stages.size());
             std::transform(pModules.begin(), pModules.end(), descSetsPerStage.begin(),[i] (auto mod)
-                                                                         { return GetDescSetOf(i, mod); });
+            { return GetDescSetOf(i, mod); });
 
             // NOTE: we do this weird little thing to preserve the possibility of a null set, and to keep the functional expectation of a Union-Alloced set (meaning set and bindings allocated)
             for (auto set : descSetsPerStage) {
@@ -210,7 +344,7 @@ void PopulateGlobalDescriptorLayouts(const std::vector<std::pair<uint32_t, SpvRe
                                      std::vector<GlobalDescriptorSet>& INOUT_globalDescSets) {
     auto configs = pipelineDescSetsAtGlobal;
     std::sort(configs.begin(), configs.end(), [](const auto& a, const auto& b)
-                                                             { return a.first < b.first; });
+    { return a.first < b.first; });
     for (auto& inout_descSet : INOUT_globalDescSets) {
         uint32_t id = inout_descSet.globalDescSetID;
         inout_descSet.descSet = new SpvReflectDescriptorSet{ 0, 0, nullptr};
@@ -224,32 +358,6 @@ void PopulateGlobalDescriptorLayouts(const std::vector<std::pair<uint32_t, SpvRe
         }
     }
 }
-
-// =================================================================================================
-// main()
-// =================================================================================================
-int main(int argn, char** argv) {
-    ExampleParseSingleModule();
-    std::cout << "done" << std::endl;
-    PerformShaderGen();
-    return 0;
-}
-
-
-std::pair<std::vector<SpvReflectDescriptorSet *>, std::vector<SpvReflectShaderModule*>> ParsePipelineConfig(const PipelineConfig& config) {
-    // TODO, this isn't sufficient because we assume GLOBAL descriptors for set = 0
-    auto name = config.pipelineName;
-    auto stages = config.stages;
-    auto flag = config.layoutFlags; // really only for descriptor indexing right now
-    // use the existing code and allocate a new pointer array to the bindings from each, Like this:
-    //auto overarchBindings = std::make_unique_ptr<SpvReflectDescriptorBinding*>(16);
-    std::unique_ptr<SpvReflectDescriptorBinding*[]> overarchBindings = std::make_unique<SpvReflectDescriptorBinding*[]>(16);
-    SpvReflectDescriptorSet set;
-    set.bindings = overarchBindings.get(); set.binding_count = 16; set.set = 0;
-    return {{}, {}};
-}
-
-
 
 
 

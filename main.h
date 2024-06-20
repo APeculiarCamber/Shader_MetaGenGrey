@@ -36,7 +36,7 @@ struct GlobalDescriptorSet {
 
 // BASELINE BOILERPLATE
 std::string WriteFromFile(const std::string& inFilename);
-std::string WriteBaselineTypeDescriptions();
+std::string WriteTypeDescriptionsBoilerplate();
 std::string WriteDescSetLayoutBoilerplate();
 
 // WRITE AND PARSING INDIVIDUAL MODULES
@@ -47,9 +47,12 @@ std::string GetTypeAsString(SpvReflectInterfaceVariable* inVar);
 std::string GetTypeAsString(SpvReflectTypeDescription* typeDesc);
 std::string GetFormatAsString(SpvReflectFormat format);
 std::string GetDescriptorTypeAsString(SpvReflectDescriptorType descType);
-std::string WriteVertexInputs(const std::vector<SpvReflectInterfaceVariable *>& inputVars);
-std::string WriteInstanceInputs(const std::vector<SpvReflectInterfaceVariable *>& inputVars);
-std::string WriteUsedStructsInDescSet(const std::vector<SpvReflectDescriptorBinding*>& bindings);
+
+std::string WriteVertexInputs(const std::vector<SpvReflectInterfaceVariable *> &inputVars, const std::string &postfix="");
+std::string WriteInstanceInputs(const std::vector<SpvReflectInterfaceVariable *> &inputVars, const std::string &postfix="");
+
+std::string
+WriteUsedStructsInDescSet(const std::vector<SpvReflectDescriptorBinding *> &bindings, const std::vector<std::string> &prohibitedStructs={});
 std::string WriteDescSetLayout(const std::vector<SpvReflectDescriptorBinding*>& bindings, const std::string& setName= "DEFAULT_NAME");
 std::string WriteDescSetLayoutManager(const std::vector<std::pair<uint32_t, std::string>>& regDescSets,
                                       const std::vector<SpvReflectDescriptorSet *> &sets);
@@ -82,9 +85,19 @@ void FreeReflectModules(std::vector<std::pair<std::string, SpvReflectShaderModul
 std::vector<std::array<SpvReflectDescriptorSet *, MAX_DESCRIPTOR_SETS>>
 MergeModulesUnionDescriptorSetsByPipeline(const std::vector<PipelineConfig> &pipelines,
                                           const std::vector<std::pair<std::string, SpvReflectShaderModule *>> &modules);
-
+SpvReflectDescriptorSet* GetDescSetOf(uint32_t id, SpvReflectShaderModule* module);
 void PopulateGlobalDescriptorLayouts(const std::vector<std::pair<uint32_t, SpvReflectDescriptorSet*>> &pipelineDescSetsAtGlobal,
                                      std::vector<GlobalDescriptorSet>& INOUT_globalDescSets);
+
+
+
+// GENERATION
+void GenerateInputVariableFile(const std::vector<PipelineConfig> &configs,
+                               std::vector<std::pair<std::string, SpvReflectShaderModule *>> &modules,
+                               const std::string& filename);
+void GenerateGlobalDescriptorSetsFile(const std::vector<GlobalDescriptorSet> &globalConfigs,
+                                      const std::vector<std::pair<uint32_t, SpvReflectDescriptorSet *>> &reflectedGlobalDescSets,
+                                      const std::string& filename);
 
 
 
