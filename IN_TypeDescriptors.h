@@ -2,8 +2,8 @@
 // Created by idemaj on 6/19/24.
 //
 
-#ifndef SHADER_METAGEN_TYPEDESCRIPTORS_H
-#define SHADER_METAGEN_TYPEDESCRIPTORS_H
+#ifndef SHADER_METAGEN_IN_TYPEDESCRIPTORS_H
+#define SHADER_METAGEN_IN_TYPEDESCRIPTORS_H
 #include <iostream>
 
 // Macro to generate a vector of size N with member variables x, y, z, w
@@ -53,4 +53,4 @@ GENERATE_MATRIX(4, 3)
 GENERATE_MATRIX(4, 4)
 
 
-#endif //SHADER_METAGEN_TYPEDESCRIPTORS_H
+#endif //SHADER_METAGEN_IN_TYPEDESCRIPTORS_H
